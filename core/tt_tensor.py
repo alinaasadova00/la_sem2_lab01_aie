@@ -1,136 +1,139 @@
 # core/tt_tensor.py
 
-"""
-Тензор в TT-формате (Tensor Train).
-
-TT-тензор порядка d с shape (n_0, n_1, ..., n_{d-1}) хранится как
-список d ядер (cores), где k-е ядро — это 3D DenseTensor с shape:
-    (r_k, n_k, r_{k+1})
-
-Граничные условия: r_0 = r_d = 1.
-
-TT-ранги: (r_0, r_1, ..., r_d) = (1, r_1, ..., r_{d-1}, 1).
-"""
+"""Тензор в TT-формате (Tensor Train)."""
 
 from __future__ import annotations
 
+import random
+
 from core.dense_tensor import DenseTensor
+from core.linalg import matmul
 from core.utils import validate_shape, compute_size
 
 
 class TTTensor:
-    """
-    Тензор в TT-формате.
-
-    Атрибуты:
-        cores:  список DenseTensor, каждый с shape (r_k, n_k, r_{k+1})
-        order:  порядок тензора d (число мод)
-        shape:  кортеж (n_0, n_1, ..., n_{d-1})
-        ranks:  кортеж TT-рангов (r_0, r_1, ..., r_d), r_0 = r_d = 1
-    """
+    """Тензор в TT-формате."""
 
     __slots__ = ('cores', 'order', 'shape', 'ranks')
 
-    # ────────────────────────────────────────────
-    # Конструкторы
-    # ────────────────────────────────────────────
+    def __init__(self, cores):
+        if not isinstance(cores, list) or not cores:
+            raise ValueError("cores должен быть непустым списком DenseTensor")
 
-    def __init__(self, cores: list[DenseTensor]) -> None:
-        """
-        Создаёт TT-тензор из списка ядер.
+        validated = []
+        for core in cores:
+            if not isinstance(core, DenseTensor) or core.ndim != 3:
+                raise ValueError("каждое ядро должно быть 3D DenseTensor")
+            validated.append(core.copy())
 
-        Args:
-            cores: список DenseTensor, каждый с shape (r_k, n_k, r_{k+1})
-        """
-        pass
+        order = len(validated)
+        shape = []
+        ranks = []
 
+        for k, core in enumerate(validated):
+            r_prev, n_k, r_next = core.shape
+            shape.append(n_k)
+            ranks.append(r_prev)
+            if k > 0:
+                prev_r_next = validated[k - 1].shape[2]
+                if r_prev != prev_r_next:
+                    raise ValueError(
+                        f"несогласованные ранги между ядрами {k - 1} и {k}"
+                    )
+
+        ranks.append(validated[-1].shape[2])
+
+        if ranks[0] != 1 or ranks[-1] != 1:
+            raise ValueError("граничные TT-ранги должны быть равны 1")
+
+        self.cores = validated
+        self.order = order
+        self.shape = tuple(shape)
+        self.ranks = tuple(ranks)
 
     @staticmethod
     def random(shape, ranks, seed=None):
-        """
-        Создаёт случайный TT-тензор с заданными рангами.
+        if seed is not None:
+            random.seed(seed)
 
-        Args:
-            shape:  кортеж размеров мод (n_0, ..., n_{d-1})
-            ranks:  кортеж TT-рангов (r_0, r_1, ..., r_d)
-                    или список внутренних рангов (r_1, ..., r_{d-1})
-            seed:   seed для воспроизводимости
+        shape = validate_shape(shape)
+        order = len(shape)
 
-        NB: это отладочная функция, она не проверяется тестами
-        """
-        pass
+        if len(ranks) == order + 1:
+            ranks = tuple(ranks)
+        elif len(ranks) == order - 1:
+            ranks = (1,) + tuple(ranks) + (1,)
+        else:
+            raise ValueError("некорректная длина ranks")
 
-    # ────────────────────────────────────────────
-    # Доступ к элементам
-    # ────────────────────────────────────────────
+        if ranks[0] != 1 or ranks[-1] != 1:
+            raise ValueError("граничные TT-ранги должны быть равны 1")
 
-    def get_element(
-        self,
-        indices: tuple[int, ...] | list[int]
-    ) -> float:
-        """
-        Возвращает элемент TT-тензора по его мультииндексу.
+        cores = []
+        for k in range(order):
+            core_shape = (ranks[k], shape[k], ranks[k + 1])
+            cores.append(DenseTensor.random(core_shape, integer=False))
 
-        Args:
-            indices: кортеж/список длины d
-        """
-        pass
+        return TTTensor(cores)
 
-    # ────────────────────────────────────────────
-    # Восстановление полного тензора
-    # ────────────────────────────────────────────
+    def get_element(self, indices):
+        if len(indices) != self.order:
+            raise ValueError("длина индекса не совпадает с порядком тензора")
 
-    def full(self) -> DenseTensor:
-        """Возвращает полный DenseTensor из его TT-формата."""
-        pass
+        vector = [1.0]
 
-    # ────────────────────────────────────────────
-    # Информация и отладка
-    # ────────────────────────────────────────────
+        for k, idx in enumerate(indices):
+            core = self.cores[k]
+            r_prev = core.shape[0]
+            r_next = core.shape[2]
+            new_vector = [0.0] * r_next
 
-    def core_sizes(self) -> list[tuple[int, ...]]:
-        """Возвращает размеры всех ядер."""
-        pass
+            for a in range(r_prev):
+                for b in range(r_next):
+                    new_vector[b] += vector[a] * core[a, idx, b]
 
-    def total_storage(self) -> int:
-        """
-        Возвращает общее число элементов во всех ядрах.
-        Это то, сколько памяти реально занимает TT-тензор.
-        """
-        pass
+            vector = new_vector
 
-    def compression_ratio(self) -> float:
-        """
-        Возвращает отношение числа элементов полного тензора к числу
-        элементов TT-тензора. Показывает, насколько TT-формат компактнее.
-        """
-        pass
+        return vector[0]
 
-    def copy(self) -> TTTensor:
-        """Возвращает глубокую копию TT-тензора."""
-        pass
+    def full(self):
+        if self.order == 0:
+            return DenseTensor(())
 
-    def __repr__(self) -> str:
-        """
-        Возвращает строковое представление TT-тензора для отладки.
+        current = self.cores[0].reshape((self.shape[0], self.ranks[1]))
 
-        Формирует многострочную строку с основной служебной информацией
-        об объекте:
-            - порядок тензора (order),
-            - исходная форма (shape),
-            - TT-ранги (ranks),
-            - размеры TT-ядер (cores),
-            - суммарный объём хранения в элементах.
+        for k in range(1, self.order):
+            core = self.cores[k]
+            r_k = core.shape[0]
+            n_k = core.shape[1]
+            r_next = core.shape[2]
+            core_matrix = core.reshape((r_k, n_k * r_next))
+            current = matmul(current, core_matrix)
+            current = current.reshape((current.shape[0] * n_k, r_next))
 
-        NB: это отладочная функция, которая не покрывается тестами
-        """
-        pass
+        return current.reshape(self.shape)
 
-    def __str__(self) -> str:
-        """
-        Возвращает строковое представление TT-тензора.
+    def core_sizes(self):
+        return [core.shape for core in self.cores]
 
-        Делегирует работу методу __repr__, обеспечивая единый формат
-        отображения при вызове.
-        """
+    def total_storage(self):
+        return sum(core.size for core in self.cores)
+
+    def compression_ratio(self):
+        full_size = compute_size(self.shape)
+        storage = self.total_storage()
+        if storage == 0:
+            return float('inf')
+        return full_size / storage
+
+    def copy(self):
+        return TTTensor([core.copy() for core in self.cores])
+
+    def __repr__(self):
+        return (
+            f"TTTensor(order={self.order}, shape={self.shape}, "
+            f"ranks={self.ranks}, storage={self.total_storage()})"
+        )
+
+    def __str__(self):
         return self.__repr__()
