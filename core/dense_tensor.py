@@ -71,7 +71,7 @@ class DenseTensor:
 
     @staticmethod
     def _infer_shape(obj):
-        if not isinstance(obj, list):
+        if not isinstance(obj, (list, tuple)):
             return ()
         if not obj:
             return (0,)
@@ -85,7 +85,7 @@ class DenseTensor:
 
     @staticmethod
     def _flatten_nested(obj):
-        if not isinstance(obj, list):
+        if not isinstance(obj, (list, tuple)):
             return [float(obj)]
 
         result = []

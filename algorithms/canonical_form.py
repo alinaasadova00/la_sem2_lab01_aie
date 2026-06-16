@@ -19,19 +19,36 @@ def left_canonicalize(tt, backend):
         r_prev, n_k, r_next = core.shape
 
         M = core.reshape((r_prev * n_k, r_next))
-        Q, R = backend.qr(M)
-        cores[k] = Q.reshape((r_prev, n_k, r_next))
 
+        if M.shape[0] >= M.shape[1]:
+            # классический QR
+            Q, R = backend.qr(M)
+            new_core = Q.reshape((r_prev, n_k, r_next))
+            next_r = r_next
+        else:
+            # широкая развертка: уменьшаем ранг через SVD
+            m, _ = M.shape
+            U, S, Vt = backend.svd(M)
+            R = _multiply_diag_matrix(S, Vt, m, backend)
+            new_core = U.reshape((r_prev, n_k, m))
+            next_r = m
+
+        cores[k] = new_core
+
+        # поглощаем R в следующее ядро слева
         next_core = cores[k + 1]
         n_next = next_core.shape[1]
         r_next_next = next_core.shape[2]
 
+        new_next_core = DenseTensor.zeros((next_r, n_next, r_next_next))
         for i in range(n_next):
             slice_mat = next_core[:, i, :].reshape((r_next, r_next_next))
             new_slice = backend.matmul(R, slice_mat)
-            for a in range(r_next):
+            for a in range(next_r):
                 for b in range(r_next_next):
-                    next_core[a, i, b] = new_slice[a, b]
+                    new_next_core[a, i, b] = new_slice[a, b]
+
+        cores[k + 1] = new_next_core
 
     return TTTensor(cores)
 
@@ -46,25 +63,41 @@ def right_canonicalize(tt, backend):
     for k in range(tt.order - 1, 0, -1):
         core = cores[k]
         r_prev, n_k, r_next = core.shape
+        n_cols = n_k * r_next
 
-        M = core.reshape((r_prev, n_k * r_next))
-        M_t = backend.transpose(M)
-        Q_t, R_t = backend.qr(M_t)
+        M = core.reshape((r_prev, n_cols))
 
-        Q = backend.transpose(Q_t)
-        R = backend.transpose(R_t)
-        cores[k] = Q.reshape((r_prev, n_k, r_next))
+        if r_prev <= n_cols:
+            # классический RQ через QR транспонированной матрицы
+            M_t = backend.transpose(M)
+            Q_t, R_t = backend.qr(M_t)
+            Q = backend.transpose(Q_t)
+            R = backend.transpose(R_t)
+            new_core = Q.reshape((r_prev, n_k, r_next))
+            prev_r = r_prev
+        else:
+            # узкая развертка: уменьшаем ранг через SVD
+            U, S, Vt = backend.svd(M)
+            R = _multiply_columns_by_diag(U, S, backend)
+            new_core = Vt.reshape((n_cols, n_k, r_next))
+            prev_r = n_cols
 
+        cores[k] = new_core
+
+        # поглощаем R в предыдущее ядро справа
         prev_core = cores[k - 1]
         n_prev = prev_core.shape[1]
         r_prev_prev = prev_core.shape[0]
 
+        new_prev_core = DenseTensor.zeros((r_prev_prev, n_prev, prev_r))
         for i in range(n_prev):
             slice_mat = prev_core[:, i, :].reshape((r_prev_prev, r_prev))
             new_slice = backend.matmul(slice_mat, R)
             for a in range(r_prev_prev):
-                for b in range(r_prev):
-                    prev_core[a, i, b] = new_slice[a, b]
+                for b in range(prev_r):
+                    new_prev_core[a, i, b] = new_slice[a, b]
+
+        cores[k - 1] = new_prev_core
 
     return TTTensor(cores)
 
